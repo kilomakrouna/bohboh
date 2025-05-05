@@ -1,0 +1,28 @@
+# config/default_params.yaml
+
+# --- Data Paths ---
+# Base directory for input datasets
+data_base_dir: "./data/"
+# Specific dataset name to process
+dataset_name: "dataset_1"
+
+# --- Preprocessing ---
+# Epsilon value for numerical stability (avoid log(0)/division by zero)
+preprocess_epsilon: 1.0e-6
+
+# --- Reconstruction ---
+# Algorithm settings
+reconstruction_algorithm: "fbp" # Options: 'fbp', 'sirt' (future)
+fbp_filter: "ramp"             # Filter for FBP ('ramp', 'shepp-logan', 'cosine', etc.)
+output_slice_size: null        # Desired size of output slices (null to use input width)
+# sirt_iterations: 100         # Example for future iterative methods
+
+# --- Output ---
+# Base directory for results
+results_base_dir: "./results/"
+# Output file prefix for reconstructed slices
+output_prefix: "recon"
+
+# --- Logging ---
+log_level: "INFO"              # Logging level (DEBUG, INFO, WARNING, ERROR)
+log_file: "pipeline.log"       # Set to null for console logging only
