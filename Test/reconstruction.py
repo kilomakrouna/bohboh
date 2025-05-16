@@ -89,69 +89,144 @@ class CTReconstructor:
         
         num_projections, num_rows, num_cols = projections.shape
         
+        # Check if the number of projections matches the angles in the config
+        config_angles = len(self.angles_rad)
+        if num_projections != config_angles:
+            print(f"Warning: Number of projections ({num_projections}) doesn't match config angles ({config_angles})")
+            print("Adapting angles to match the number of projections...")
+            # Adjust angles to match the number of projections
+            if self.use_cone_beam:
+                # For cone beam, we typically use angles spanning a full rotation (0 to 2π)
+                self.angles_rad = np.linspace(0, 2*np.pi, num_projections, endpoint=False)
+            else:
+                # For parallel beam, we typically use angles spanning half a rotation (0 to π)
+                self.angles_rad = np.linspace(0, np.pi, num_projections, endpoint=False)
+        
         # Reconstruct each slice
         reconstructed_slices = []
         
         print("Reconstructing slices...")
-        for i in tqdm(range(num_rows)):
-            # Extract the sinogram for slice i
-            sinogram = projections[:, i, :]
+        try:
+            for i in tqdm(range(num_rows)):
+                # Extract the sinogram for slice i
+                sinogram = projections[:, i, :]
+                
+                if self.use_cone_beam:
+                    # Check dimensions and try to adjust if there's a mismatch
+                    try:
+                        # Define cone-beam geometry
+                        proj_geom = astra.create_proj_geom(
+                            'cone', 
+                            1.0, 1.0,  # detector pixel size in mm
+                            num_rows, num_cols,  # detector rows, cols
+                            self.angles_rad,  # angles in radians
+                            self.distance_source_object,  # source to origin distance
+                            self.distance_object_detector  # origin to detector distance
+                        )
+                        
+                        # If cone beam is causing issues, try to use fan beam for 2D reconstruction instead
+                        sinogram_id = astra.data3d.create('-sino', proj_geom, sinogram)
+                    except Exception as e:
+                        print(f"Error with cone-beam geometry: {e}")
+                        print("Falling back to parallel beam geometry for 2D reconstruction...")
+                        self.use_cone_beam = False
+                        # Define parallel beam geometry for this slice
+                        proj_geom = astra.create_proj_geom('parallel', 1.0, num_cols, self.angles_rad)
+                        vol_geom = astra.create_vol_geom(num_cols, num_cols)
+                        sinogram_id = astra.data2d.create('-sino', proj_geom, sinogram)
+                        rec_id = astra.data2d.create('-vol', vol_geom)
+                        cfg = astra.astra_dict('FBP')
+                        cfg['ProjectionDataId'] = sinogram_id
+                        cfg['ReconstructionDataId'] = rec_id
+                        alg_id = astra.algorithm.create(cfg)
+                        astra.algorithm.run(alg_id)
+                        rec = astra.data2d.get(rec_id)
+                        reconstructed_slices.append(rec)
+                        astra.algorithm.delete(alg_id)
+                        astra.data2d.delete([sinogram_id, rec_id])
+                        continue
+                    
+                    # Define volume geometry based on bounding box size
+                    vol_size = int(self.bounding_box['sizeXYZ'][0])  # Use the size from bounding box
+                    vol_geom = astra.create_vol_geom(vol_size, vol_size, vol_size)
+                    
+                    # Create 3D volume data
+                    rec_id = astra.data3d.create('-vol', vol_geom)
+                    
+                    # Configure the FDK algorithm (cone-beam)
+                    cfg = astra.astra_dict('FDK')
+                    
+                else:
+                    # For parallel beam (2D)
+                    proj_geom = astra.create_proj_geom('parallel', 1.0, num_cols, self.angles_rad)
+                    vol_geom = astra.create_vol_geom(num_cols, num_cols)
+                    
+                    # Create 2D data objects
+                    sinogram_id = astra.data2d.create('-sino', proj_geom, sinogram)
+                    rec_id = astra.data2d.create('-vol', vol_geom)
+                    
+                    # Configure the FBP algorithm (parallel beam)
+                    cfg = astra.astra_dict('FBP')
             
-            if self.use_cone_beam:
-                # Define cone-beam geometry
-                proj_geom = astra.create_proj_geom(
-                    'cone', 
-                    1.0, 1.0,  # detector pixel size in mm
-                    num_rows, num_cols,  # detector rows, cols
-                    self.angles_rad,  # angles in radians
-                    self.distance_source_object,  # source to origin distance
-                    self.distance_object_detector  # origin to detector distance
-                )
+                # Set the configuration
+                cfg['ProjectionDataId'] = sinogram_id
+                cfg['ReconstructionDataId'] = rec_id
                 
-                # Define volume geometry based on bounding box size
-                vol_size = int(self.bounding_box['sizeXYZ'][0])  # Use the size from bounding box
-                vol_geom = astra.create_vol_geom(vol_size, vol_size, vol_size)
+                # Create and run the algorithm
+                alg_id = astra.algorithm.create(cfg)
+                astra.algorithm.run(alg_id)
                 
-                # Create data objects
-                sinogram_id = astra.data3d.create('-sino', proj_geom, sinogram)
-                rec_id = astra.data3d.create('-vol', vol_geom)
+                # Get the reconstructed slice
+                if self.use_cone_beam:
+                    rec = astra.data3d.get(rec_id)
+                else:
+                    rec = astra.data2d.get(rec_id)
                 
-                # Configure the FDK algorithm (cone-beam)
-                cfg = astra.astra_dict('FDK')
+                reconstructed_slices.append(rec)
                 
-            else:
-                # For parallel beam (2D)
-                proj_geom = astra.create_proj_geom('parallel', 1.0, num_cols, self.angles_rad)
+                # Clean up memory
+                astra.algorithm.delete(alg_id)
+                if self.use_cone_beam:
+                    astra.data3d.delete([sinogram_id, rec_id])
+                else:
+                    astra.data2d.delete([sinogram_id, rec_id])
+                
+        except Exception as e:
+            print(f"Error during reconstruction: {e}")
+            print("Trying alternative approach with 2D parallel beam reconstruction...")
+            
+            # Fall back to simple 2D parallel beam reconstruction
+            reconstructed_slices = []
+            
+            # Use 2D parallel beam reconstruction for each slice
+            for i in tqdm(range(num_rows)):
+                # Extract the sinogram for slice i
+                sinogram = projections[:, i, :]
+                
+                # Define parallel beam geometry
+                angles = np.linspace(0, np.pi, num_projections, endpoint=False)
+                proj_geom = astra.create_proj_geom('parallel', 1.0, num_cols, angles)
                 vol_geom = astra.create_vol_geom(num_cols, num_cols)
                 
                 # Create 2D data objects
                 sinogram_id = astra.data2d.create('-sino', proj_geom, sinogram)
                 rec_id = astra.data2d.create('-vol', vol_geom)
                 
-                # Configure the FBP algorithm (parallel beam)
+                # Configure the FBP algorithm
                 cfg = astra.astra_dict('FBP')
-        
-            # Set the configuration
-            cfg['ProjectionDataId'] = sinogram_id
-            cfg['ReconstructionDataId'] = rec_id
-            
-            # Create and run the algorithm
-            alg_id = astra.algorithm.create(cfg)
-            astra.algorithm.run(alg_id)
-            
-            # Get the reconstructed slice
-            if self.use_cone_beam:
-                rec = astra.data3d.get(rec_id)
-            else:
+                cfg['ProjectionDataId'] = sinogram_id
+                cfg['ReconstructionDataId'] = rec_id
+                
+                # Run the algorithm
+                alg_id = astra.algorithm.create(cfg)
+                astra.algorithm.run(alg_id)
+                
+                # Get the reconstructed slice
                 rec = astra.data2d.get(rec_id)
-            
-            reconstructed_slices.append(rec)
-            
-            # Clean up memory
-            astra.algorithm.delete(alg_id)
-            if self.use_cone_beam:
-                astra.data3d.delete([sinogram_id, rec_id])
-            else:
+                reconstructed_slices.append(rec)
+                
+                # Clean up memory
+                astra.algorithm.delete(alg_id)
                 astra.data2d.delete([sinogram_id, rec_id])
         
         # Convert list of 2D slices to 3D volume
