@@ -72,6 +72,60 @@ class CTReconstructor:
         
         return projections
     
+    def manual_backprojection(self, sinogram, angles):
+        """
+        Perform a simple manual backprojection without relying on ASTRA's algorithms
+        
+        Parameters:
+        -----------
+        sinogram : ndarray
+            2D sinogram array
+        angles : ndarray
+            Array of angles in radians
+            
+        Returns:
+        --------
+        reconstruction : ndarray
+            Reconstructed 2D image
+        """
+        num_angles, num_detector_pixels = sinogram.shape
+        
+        # Create a square reconstruction grid
+        size = num_detector_pixels
+        reconstruction = np.zeros((size, size), dtype=np.float32)
+        
+        # Center coordinates
+        center_x = size // 2
+        center_y = size // 2
+        
+        # Create meshgrid of coordinates
+        x = np.arange(size) - center_x
+        y = np.arange(size) - center_y
+        X, Y = np.meshgrid(x, y)
+        
+        # For each angle, backproject
+        for i, theta in enumerate(angles):
+            # Convert to radians
+            cos_theta = np.cos(theta)
+            sin_theta = np.sin(theta)
+            
+            # Calculate projection coordinates
+            t = X * cos_theta + Y * sin_theta
+            
+            # Convert to detector pixel indices
+            t = t + num_detector_pixels // 2
+            
+            # Clip to valid indices
+            t = np.clip(t.astype(np.int32), 0, num_detector_pixels - 1)
+            
+            # Backproject
+            reconstruction += sinogram[i, t]
+        
+        # Normalize
+        reconstruction /= num_angles
+        
+        return reconstruction
+    
     def reconstruct(self, projections=None, dcm_dir=None, output_path=None):
         """
         Perform the CT reconstruction
@@ -105,134 +159,151 @@ class CTReconstructor:
             # Adjust angles to match the number of projections
             self.angles_rad = np.linspace(0, np.pi, num_projections, endpoint=False)
         
-        # Always use 2D parallel beam reconstruction (more stable)
-        print("Using 2D parallel beam reconstruction (slice by slice)...")
-        reconstructed_slices = []
-        
-        # Define the method to use (try several if needed)
-        reconstruction_methods = ['SIRT', 'CGLS', 'BP', 'FBP', 'SART']
-        success = False
-        
-        # Find a working reconstruction method
-        working_method = None
-        for method in reconstruction_methods:
-            print(f"Trying reconstruction with {method} method...")
-            try:
-                # Test with one slice
-                sinogram = projections[:, 0, :]
-                angles = np.linspace(0, np.pi, num_projections, endpoint=False)
-                
-                # Create geometry
-                proj_geom = astra.create_proj_geom('parallel', 1.0, num_cols, angles)
-                vol_geom = astra.create_vol_geom(num_cols, num_cols)
-                
-                # Create data objects
-                sinogram_id = astra.data2d.create('-sino', proj_geom, sinogram)
-                rec_id = astra.data2d.create('-vol', vol_geom)
-                
-                # Try to create the algorithm
-                if method == 'BP':
-                    # Backprojection
-                    cfg = astra.astra_dict('BP')
-                elif method == 'FBP':
-                    # Filtered backprojection
-                    cfg = astra.astra_dict('FBP')
-                elif method == 'SIRT':
-                    # SIRT iterative method
-                    cfg = astra.astra_dict('SIRT')
-                    cfg['option'] = {'ProjectionOrder': 'random'}
-                    cfg['option']['MinConstraint'] = 0
-                    cfg['option']['MaxConstraint'] = 255
-                elif method == 'SART':
-                    # SART iterative method
-                    cfg = astra.astra_dict('SART')
-                    cfg['option'] = {}
-                    cfg['option']['MinConstraint'] = 0
-                elif method == 'CGLS':
-                    # CGLS iterative method
-                    cfg = astra.astra_dict('CGLS')
-                    cfg['option'] = {}
-                
-                cfg['ProjectionDataId'] = sinogram_id
-                cfg['ReconstructionDataId'] = rec_id
-                
-                # Try to create the algorithm
-                alg_id = astra.algorithm.create(cfg)
-                
-                # If we get here, the algorithm was created successfully
-                astra.algorithm.run(alg_id, 20)  # 20 iterations for iterative methods
-                working_method = method
-                success = True
-                
-                # Clean up
-                astra.algorithm.delete(alg_id)
-                astra.data2d.delete([sinogram_id, rec_id])
-                break
-                
-            except Exception as e:
-                print(f"Method {method} failed: {e}")
-                # Try to clean up if objects were created
+        # Try ASTRA methods first
+        try:
+            print("Trying ASTRA reconstruction methods...")
+            # Define the method to use (try several if needed)
+            reconstruction_methods = ['SIRT', 'CGLS', 'BP', 'FBP', 'SART']
+            success = False
+            
+            # Find a working reconstruction method
+            working_method = None
+            for method in reconstruction_methods:
+                print(f"Trying reconstruction with {method} method...")
                 try:
-                    if 'alg_id' in locals():
-                        astra.algorithm.delete(alg_id)
-                    if 'sinogram_id' in locals() and 'rec_id' in locals():
-                        astra.data2d.delete([sinogram_id, rec_id])
-                except:
-                    pass
-        
-        if not success:
-            raise ValueError("Could not find a working reconstruction method. Please check your ASTRA installation.")
-        
-        print(f"Using {working_method} for reconstruction")
-        
-        # Now reconstruct all slices with the working method
-        for i in tqdm(range(num_rows)):
-            # Extract the sinogram for slice i
-            sinogram = projections[:, i, :]
+                    # Test with one slice
+                    sinogram = projections[:, 0, :]
+                    angles = np.linspace(0, np.pi, num_projections, endpoint=False)
+                    
+                    # Create geometry
+                    proj_geom = astra.create_proj_geom('parallel', 1.0, num_cols, angles)
+                    vol_geom = astra.create_vol_geom(num_cols, num_cols)
+                    
+                    # Create data objects
+                    sinogram_id = astra.data2d.create('-sino', proj_geom, sinogram)
+                    rec_id = astra.data2d.create('-vol', vol_geom)
+                    
+                    # Try to create the algorithm
+                    if method == 'BP':
+                        # Backprojection
+                        cfg = astra.astra_dict('BP')
+                    elif method == 'FBP':
+                        # Filtered backprojection
+                        cfg = astra.astra_dict('FBP')
+                    elif method == 'SIRT':
+                        # SIRT iterative method
+                        cfg = astra.astra_dict('SIRT')
+                        cfg['option'] = {'ProjectionOrder': 'random'}
+                        cfg['option']['MinConstraint'] = 0
+                        cfg['option']['MaxConstraint'] = 255
+                    elif method == 'SART':
+                        # SART iterative method
+                        cfg = astra.astra_dict('SART')
+                        cfg['option'] = {}
+                        cfg['option']['MinConstraint'] = 0
+                    elif method == 'CGLS':
+                        # CGLS iterative method
+                        cfg = astra.astra_dict('CGLS')
+                        cfg['option'] = {}
+                    
+                    cfg['ProjectionDataId'] = sinogram_id
+                    cfg['ReconstructionDataId'] = rec_id
+                    
+                    # Try to create the algorithm
+                    alg_id = astra.algorithm.create(cfg)
+                    
+                    # If we get here, the algorithm was created successfully
+                    astra.algorithm.run(alg_id, 20)  # 20 iterations for iterative methods
+                    working_method = method
+                    success = True
+                    
+                    # Clean up
+                    astra.algorithm.delete(alg_id)
+                    astra.data2d.delete([sinogram_id, rec_id])
+                    break
+                    
+                except Exception as e:
+                    print(f"Method {method} failed: {e}")
+                    # Try to clean up if objects were created
+                    try:
+                        if 'alg_id' in locals():
+                            astra.algorithm.delete(alg_id)
+                        if 'sinogram_id' in locals() and 'rec_id' in locals():
+                            astra.data2d.delete([sinogram_id, rec_id])
+                    except:
+                        pass
             
-            # Define parallel beam geometry
-            angles = np.linspace(0, np.pi, num_projections, endpoint=False)
-            proj_geom = astra.create_proj_geom('parallel', 1.0, num_cols, angles)
-            vol_geom = astra.create_vol_geom(num_cols, num_cols)
-            
-            # Create data objects
-            sinogram_id = astra.data2d.create('-sino', proj_geom, sinogram)
-            rec_id = astra.data2d.create('-vol', vol_geom)
-            
-            # Configure the algorithm
-            if working_method == 'BP':
-                cfg = astra.astra_dict('BP')
-            elif working_method == 'FBP':
-                cfg = astra.astra_dict('FBP')
-            elif working_method == 'SIRT':
-                cfg = astra.astra_dict('SIRT')
-                cfg['option'] = {'ProjectionOrder': 'random'}
-            elif working_method == 'SART':
-                cfg = astra.astra_dict('SART')
-                cfg['option'] = {}
-            elif working_method == 'CGLS':
-                cfg = astra.astra_dict('CGLS')
-                cfg['option'] = {}
-            
-            cfg['ProjectionDataId'] = sinogram_id
-            cfg['ReconstructionDataId'] = rec_id
-            
-            # Create and run the algorithm
-            alg_id = astra.algorithm.create(cfg)
-            
-            # Run the algorithm (with iterations for iterative methods)
-            if working_method in ['SIRT', 'SART', 'CGLS']:
-                astra.algorithm.run(alg_id, 20)
+            # If we found a working method, use it for all slices
+            if success:
+                print(f"Using ASTRA {working_method} for reconstruction")
+                reconstructed_slices = []
+                
+                # Now reconstruct all slices with the working method
+                for i in tqdm(range(num_rows)):
+                    # Extract the sinogram for slice i
+                    sinogram = projections[:, i, :]
+                    
+                    # Define parallel beam geometry
+                    angles = np.linspace(0, np.pi, num_projections, endpoint=False)
+                    proj_geom = astra.create_proj_geom('parallel', 1.0, num_cols, angles)
+                    vol_geom = astra.create_vol_geom(num_cols, num_cols)
+                    
+                    # Create data objects
+                    sinogram_id = astra.data2d.create('-sino', proj_geom, sinogram)
+                    rec_id = astra.data2d.create('-vol', vol_geom)
+                    
+                    # Configure the algorithm
+                    if working_method == 'BP':
+                        cfg = astra.astra_dict('BP')
+                    elif working_method == 'FBP':
+                        cfg = astra.astra_dict('FBP')
+                    elif working_method == 'SIRT':
+                        cfg = astra.astra_dict('SIRT')
+                        cfg['option'] = {'ProjectionOrder': 'random'}
+                    elif working_method == 'SART':
+                        cfg = astra.astra_dict('SART')
+                        cfg['option'] = {}
+                    elif working_method == 'CGLS':
+                        cfg = astra.astra_dict('CGLS')
+                        cfg['option'] = {}
+                    
+                    cfg['ProjectionDataId'] = sinogram_id
+                    cfg['ReconstructionDataId'] = rec_id
+                    
+                    # Create and run the algorithm
+                    alg_id = astra.algorithm.create(cfg)
+                    
+                    # Run the algorithm (with iterations for iterative methods)
+                    if working_method in ['SIRT', 'SART', 'CGLS']:
+                        astra.algorithm.run(alg_id, 20)
+                    else:
+                        astra.algorithm.run(alg_id)
+                    
+                    # Get the reconstructed slice
+                    rec = astra.data2d.get(rec_id)
+                    reconstructed_slices.append(rec)
+                    
+                    # Clean up memory
+                    astra.algorithm.delete(alg_id)
+                    astra.data2d.delete([sinogram_id, rec_id])
             else:
-                astra.algorithm.run(alg_id)
+                raise ValueError("No ASTRA reconstruction methods worked")
+        
+        except Exception as e:
+            print(f"All ASTRA reconstruction methods failed: {e}")
+            print("Falling back to manual backprojection (this will be slower but more reliable)")
             
-            # Get the reconstructed slice
-            rec = astra.data2d.get(rec_id)
-            reconstructed_slices.append(rec)
+            # Use manual backprojection instead
+            reconstructed_slices = []
+            angles = np.linspace(0, np.pi, num_projections, endpoint=False)
             
-            # Clean up memory
-            astra.algorithm.delete(alg_id)
-            astra.data2d.delete([sinogram_id, rec_id])
+            for i in tqdm(range(num_rows)):
+                # Extract the sinogram for slice i
+                sinogram = projections[:, i, :]
+                
+                # Apply manual backprojection
+                rec = self.manual_backprojection(sinogram, angles)
+                reconstructed_slices.append(rec)
         
         # Convert list of 2D slices to 3D volume
         self.reconstructed_volume = np.stack(reconstructed_slices, axis=0)
