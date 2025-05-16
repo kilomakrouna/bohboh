@@ -254,17 +254,17 @@ class CTReconstructor:
                     
                     # Configure the algorithm
                     if working_method == 'BP':
-                        cfg = astra.astra_dict('BP')
+                        cfg = astra.astra_dict('BP_CUDA')
                     elif working_method == 'FBP':
-                        cfg = astra.astra_dict('FBP')
+                        cfg = astra.astra_dict('FBP_CUDA')
                     elif working_method == 'SIRT':
-                        cfg = astra.astra_dict('SIRT')
+                        cfg = astra.astra_dict('SIRT_CUDA')
                         cfg['option'] = {'ProjectionOrder': 'random'}
                     elif working_method == 'SART':
-                        cfg = astra.astra_dict('SART')
+                        cfg = astra.astra_dict('SART_CUDA')
                         cfg['option'] = {}
                     elif working_method == 'CGLS':
-                        cfg = astra.astra_dict('CGLS')
+                        cfg = astra.astra_dict('CGLS_CUDA')
                         cfg['option'] = {}
                     
                     cfg['ProjectionDataId'] = sinogram_id
