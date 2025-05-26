@@ -184,7 +184,7 @@ class AstraReconstructor:
             numpy.ndarray: Loaded projection data
         """
         # Find all matching TIFF files
-        tiff_files = sorted(glob.glob(os.path.join(tiff_dir, pattern)))
+        tiff_files = sorted([os.path.join(tiff_dir, f) for f in os.listdir(tiff_dir) if f.lower().endswith(('.tiff', '.tif'))])
         
         if not tiff_files:
             raise ValueError(f"No TIFF files found in {tiff_dir} with pattern {pattern}")
