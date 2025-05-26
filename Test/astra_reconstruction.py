@@ -235,8 +235,8 @@ class AstraReconstructor:
         
         # Set up the algorithm
         algorithm = algorithm.upper()
-        if algorithm == 'SIRT':
-            alg_cfg = astra.astra_dict('SIRT3D_CUDA')
+        if algorithm == 'SIRT_CUDA':
+            alg_cfg = astra.astra_dict('SIRT_CUDA')
             alg_cfg['ProjectionDataId'] = proj_id
             alg_cfg['ReconstructionDataId'] = vol_id
             alg_cfg['option'] = {
@@ -253,8 +253,8 @@ class AstraReconstructor:
             elapsed_time = time.time() - start_time
             print(f"Reconstruction completed in {elapsed_time:.2f} seconds")
             
-        elif algorithm == 'FBP':
-            alg_cfg = astra.astra_dict('FDK_CUDA')
+        elif algorithm == 'FBP_CUDA':
+            alg_cfg = astra.astra_dict('FDP_CUDA')
             alg_cfg['ProjectionDataId'] = proj_id
             alg_cfg['ReconstructionDataId'] = vol_id
             
@@ -262,7 +262,7 @@ class AstraReconstructor:
             alg_id = astra.algorithm.create(alg_cfg)
             
             # Run the algorithm
-            print("Running FBP (FDK) reconstruction...")
+            print("Running FBP  reconstruction...")
             start_time = time.time()
             astra.algorithm.run(alg_id, 1)
             elapsed_time = time.time() - start_time
