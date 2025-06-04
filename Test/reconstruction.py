@@ -191,7 +191,7 @@ class CTReconstructor:
         """
         
         # Try loading TIFF files first
-        tiff_files = sorted([os.path.join(dcm_dir, f) for f in os.listdir(dcm_dir) if f.lower().endswith(('.tiff', '.tif'))])
+        tiff_files = sorted([os.path.join(dcm_dir, f) for f in os.listdir(dcm_dir) if f.lower().endswith(('.tiff', '.tif', '.bmp', '.BMP'))])
         
         if tiff_files:
             print(f"Found {len(tiff_files)} TIFF files. Loading TIFF projection images...")
