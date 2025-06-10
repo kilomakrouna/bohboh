@@ -10,28 +10,55 @@ import tifffile # Added for TIFF support
 
 
 class CTReconstructor:
-    def __init__(self, config_path='Test/CT4000.json'):
+    def __init__(self, config_path=None):
         """
-        Initialize the CT Reconstructor with a configuration file
+        Initialize the CT Reconstructor with optional configuration file
         
         Parameters:
         -----------
-        config_path : str
-            Path to the CT configuration JSON file
+        config_path : str, optional
+            Path to the CT configuration JSON file. If None, parameters will be detected automatically.
         """
-        # Load configuration
-        with open(config_path, 'r') as f:
-            self.config = json.load(f)
-            
-        # Extract geometry parameters
-        self.detector_pixels = self.config['geometry']['detectorPixel']
-        self.detector_size = self.config['geometry']['detectorSize']
-        self.distance_source_object = self.config['geometry']['distanceSourceObject']
-        self.distance_object_detector = self.config['geometry']['distanceObjectDetector']
-        self.bounding_box = self.config['geometry']['objectBoundingBox']
+        # Initialize default values
+        self.config = None
+        self.detector_pixels = None
+        self.detector_size = None
+        self.distance_source_object = None
+        self.distance_object_detector = None
+        self.bounding_box = None
+        self.angles_rad = None
+        self.auto_detected = False
         
-        # Extract projection angles
-        self.angles_rad = np.array([angle_data['angle'] for angle_data in self.config['geometry']['projectionAngles']])
+        # Load configuration if provided
+        if config_path is not None:
+            try:
+                with open(config_path, 'r') as f:
+                    self.config = json.load(f)
+                    
+                # Extract geometry parameters from config
+                self.detector_pixels = self.config['geometry']['detectorPixel']
+                self.detector_size = self.config['geometry']['detectorSize']
+                self.distance_source_object = self.config['geometry']['distanceSourceObject']
+                self.distance_object_detector = self.config['geometry']['distanceObjectDetector']
+                self.bounding_box = self.config['geometry']['objectBoundingBox']
+                
+                # Extract projection angles
+                self.angles_rad = np.array([angle_data['angle'] for angle_data in self.config['geometry']['projectionAngles']])
+                
+                print(f"Loaded configuration from: {config_path}")
+                
+            except FileNotFoundError:
+                print(f"Warning: Configuration file '{config_path}' not found. Will use automatic detection.")
+                config_path = None
+            except (KeyError, json.JSONDecodeError) as e:
+                print(f"Warning: Error reading configuration file '{config_path}': {e}")
+                print("Will use automatic detection.")
+                config_path = None
+        
+        # If no config provided or loading failed, we'll detect parameters automatically later
+        if config_path is None:
+            print("No configuration file provided. Parameters will be detected automatically from projection data.")
+            self.auto_detected = True
         
         # Set default parameters
         self.use_cone_beam = False  # Changed to False to start with parallel beam (more reliable)
@@ -53,9 +80,13 @@ class CTReconstructor:
         print(f"CUDA available: {self.cuda_available}")
         print(f"Using CUDA: {self.use_cuda}")
         print(f"Using {'cone-beam' if self.use_cone_beam else 'parallel-beam'} geometry")
-        print(f"Source-object distance: {self.distance_source_object} mm")
-        print(f"Object-detector distance: {self.distance_object_detector} mm")
-        print(f"Number of angles: {len(self.angles_rad)}")
+        
+        if not self.auto_detected:
+            print(f"Source-object distance: {self.distance_source_object} mm")
+            print(f"Object-detector distance: {self.distance_object_detector} mm")
+            print(f"Number of angles: {len(self.angles_rad)}")
+        else:
+            print("Geometry parameters will be set automatically when loading projections.")
     
     def _check_cuda_availability(self):
         """
@@ -228,7 +259,64 @@ class CTReconstructor:
         num_projections, num_rows, num_cols = projections.shape
         print(f"Loaded {num_projections} projections, each with shape {num_rows} x {num_cols}")
         
+        # Auto-detect parameters if no config was provided
+        if self.auto_detected:
+            self._auto_detect_parameters(num_projections, num_rows, num_cols)
+        
         return projections
+    
+    def _auto_detect_parameters(self, num_projections, num_rows, num_cols):
+        """
+        Automatically detect CT parameters from projection data
+        
+        Parameters:
+        -----------
+        num_projections : int
+            Number of projection images
+        num_rows : int
+            Height of each projection image
+        num_cols : int
+            Width of each projection image
+        """
+        print("\n" + "="*50)
+        print("AUTO-DETECTING CT PARAMETERS")
+        print("="*50)
+        
+        # Set detector parameters based on projection dimensions
+        self.detector_pixels = [num_cols, num_rows]  # [width, height]
+        
+        # Assume 1mm pixel size as default (can be adjusted)
+        pixel_size = 1.0  # mm
+        self.detector_size = [num_cols * pixel_size, num_rows * pixel_size]
+        
+        # Set reasonable default distances for parallel beam geometry
+        # These don't affect parallel beam reconstruction much but are needed for ASTRA
+        self.distance_source_object = 1000.0  # mm
+        self.distance_object_detector = 1000.0  # mm
+        
+        # Create bounding box that encompasses the reconstruction volume
+        # Make it slightly smaller than detector to avoid edge artifacts
+        margin = 0.1  # 10% margin
+        box_size = min(num_cols, num_rows) * (1 - margin) * pixel_size
+        self.bounding_box = [-box_size/2, box_size/2, -box_size/2, box_size/2, -box_size/2, box_size/2]
+        
+        # Generate evenly spaced angles from 0 to pi (180 degrees)
+        # This assumes a standard CT scan with 180-degree coverage
+        self.angles_rad = np.linspace(0, np.pi, num_projections, endpoint=False)
+        
+        print(f"Detector pixels: {self.detector_pixels}")
+        print(f"Detector size: {self.detector_size} mm")
+        print(f"Pixel size: {pixel_size} mm")
+        print(f"Source-object distance: {self.distance_source_object} mm")
+        print(f"Object-detector distance: {self.distance_object_detector} mm")
+        print(f"Bounding box: {self.bounding_box}")
+        print(f"Number of angles: {len(self.angles_rad)}")
+        print(f"Angle range: 0 to {np.pi:.3f} radians (0 to 180 degrees)")
+        print("="*50 + "\n")
+        
+        print("Note: These parameters have been automatically detected.")
+        print("For better results, consider providing a configuration file with exact geometry parameters.")
+        print("You can adjust these parameters manually if needed.\n")
     
     def manual_backprojection(self, sinogram, angles):
         """
@@ -810,3 +898,116 @@ class CTReconstructor:
             plt.show()
             
         return fig
+    
+    def set_pixel_size(self, pixel_size_mm):
+        """
+        Set the pixel size and update detector size accordingly
+        
+        Parameters:
+        -----------
+        pixel_size_mm : float
+            Pixel size in millimeters
+        """
+        if self.detector_pixels is None:
+            raise ValueError("Detector pixels not set. Load projections first.")
+        
+        self.detector_size = [self.detector_pixels[0] * pixel_size_mm, 
+                             self.detector_pixels[1] * pixel_size_mm]
+        
+        # Update bounding box based on new pixel size
+        margin = 0.1  # 10% margin
+        box_size = min(self.detector_pixels) * (1 - margin) * pixel_size_mm
+        self.bounding_box = [-box_size/2, box_size/2, -box_size/2, box_size/2, -box_size/2, box_size/2]
+        
+        print(f"Updated pixel size to {pixel_size_mm} mm")
+        print(f"New detector size: {self.detector_size} mm")
+        print(f"Updated bounding box: {self.bounding_box}")
+    
+    def set_angular_range(self, start_angle=0, end_angle=np.pi, num_projections=None):
+        """
+        Set custom angular range for projections
+        
+        Parameters:
+        -----------
+        start_angle : float
+            Starting angle in radians (default: 0)
+        end_angle : float
+            Ending angle in radians (default: pi for 180 degrees)
+        num_projections : int, optional
+            Number of projections. If None, uses current number of angles
+        """
+        if num_projections is None:
+            if self.angles_rad is not None:
+                num_projections = len(self.angles_rad)
+            else:
+                raise ValueError("Number of projections not set. Load projections first or specify num_projections.")
+        
+        self.angles_rad = np.linspace(start_angle, end_angle, num_projections, endpoint=False)
+        
+        print(f"Updated angular range: {start_angle:.3f} to {end_angle:.3f} radians")
+        print(f"({np.degrees(start_angle):.1f} to {np.degrees(end_angle):.1f} degrees)")
+        print(f"Number of angles: {len(self.angles_rad)}")
+    
+    def set_geometry_distances(self, source_object_distance, object_detector_distance):
+        """
+        Set the source-object and object-detector distances
+        
+        Parameters:
+        -----------
+        source_object_distance : float
+            Distance from source to object in millimeters
+        object_detector_distance : float
+            Distance from object to detector in millimeters
+        """
+        self.distance_source_object = source_object_distance
+        self.distance_object_detector = object_detector_distance
+        
+        print(f"Updated geometry distances:")
+        print(f"Source-object distance: {self.distance_source_object} mm")
+        print(f"Object-detector distance: {self.distance_object_detector} mm")
+    
+    def print_current_parameters(self):
+        """
+        Print the current CT parameters
+        """
+        print("\n" + "="*50)
+        print("CURRENT CT PARAMETERS")
+        print("="*50)
+        
+        if self.detector_pixels is not None:
+            print(f"Detector pixels: {self.detector_pixels}")
+        else:
+            print("Detector pixels: Not set")
+            
+        if self.detector_size is not None:
+            print(f"Detector size: {self.detector_size} mm")
+            pixel_size = self.detector_size[0] / self.detector_pixels[0] if self.detector_pixels else None
+            if pixel_size:
+                print(f"Pixel size: {pixel_size:.3f} mm")
+        else:
+            print("Detector size: Not set")
+            
+        if self.distance_source_object is not None:
+            print(f"Source-object distance: {self.distance_source_object} mm")
+        else:
+            print("Source-object distance: Not set")
+            
+        if self.distance_object_detector is not None:
+            print(f"Object-detector distance: {self.distance_object_detector} mm")
+        else:
+            print("Object-detector distance: Not set")
+            
+        if self.bounding_box is not None:
+            print(f"Bounding box: {self.bounding_box}")
+        else:
+            print("Bounding box: Not set")
+            
+        if self.angles_rad is not None:
+            print(f"Number of angles: {len(self.angles_rad)}")
+            print(f"Angle range: {self.angles_rad[0]:.3f} to {self.angles_rad[-1]:.3f} radians")
+            print(f"({np.degrees(self.angles_rad[0]):.1f} to {np.degrees(self.angles_rad[-1]):.1f} degrees)")
+        else:
+            print("Angles: Not set")
+            
+        print(f"Configuration source: {'Auto-detected' if self.auto_detected else 'Config file'}")
+        print("="*50 + "\n")
