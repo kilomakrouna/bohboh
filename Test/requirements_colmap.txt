@@ -1,0 +1,27 @@
+# COLMAP 3D Reconstruction Requirements
+# Install with: pip install -r requirements_colmap.txt
+
+# Core COLMAP Python binding
+pycolmap>=0.5.0
+
+# Image processing
+opencv-python>=4.7.0
+Pillow>=9.0.0
+
+# 3D visualization and point cloud handling
+open3d>=0.17.0
+
+# Numerical computing
+numpy>=1.21.0
+
+# Plotting and visualization
+matplotlib>=3.5.0
+
+# Progress bars
+tqdm>=4.64.0
+
+# Path handling (usually included with Python 3.4+)
+pathlib
+
+# Optional: For advanced visualization
+plotly>=5.0.0 
