@@ -11,6 +11,7 @@ and desired processing steps.
 
 import os
 import numpy as np
+from pathlib import Path
 
 # --- 1. Path Definitions ---
 # Define the base directory of your project if needed, otherwise use relative paths.
@@ -19,14 +20,15 @@ BASE_DIR = os.getcwd() # Assumes you run scripts from the project root
 
 # Input Data Paths
 # !! MUST BE ADJUSTED by the user !!
-DATA_DIR = os.path.join(BASE_DIR, 'data')
-PROJECTION_DIR = os.path.join(DATA_DIR, 'projections', 'sample_01') # Subdirectory for a specific scan
-FLAT_FIELD_DIR = os.path.join(DATA_DIR, 'flat_fields')
-DARK_FIELD_DIR = os.path.join(DATA_DIR, 'dark_fields')
+DATA_DIR = Path("a")
+PROJECTION_DIR = Path("b") # Subdirectory for a specific scan
+FLAT_FIELD_DIR = Path("c")
+DARK_FIELD_DIR = Path("d")
 
 # Output Paths
 # Directory where all results will be saved
 OUTPUT_DIR = os.path.join(BASE_DIR, 'output')
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 # Subdirectories for specific output types
 RECON_SLICES_DIR = os.path.join(OUTPUT_DIR, 'reconstructed_slices')
 RECON_VOLUME_DIR = os.path.join(OUTPUT_DIR, 'reconstructed_volume')
