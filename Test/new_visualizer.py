@@ -36,6 +36,7 @@ def analyze_volume_statistics(volume):
             '10': float(np.percentile(volume, 10)),
             '25': float(np.percentile(volume, 25)),
             '75': float(np.percentile(volume, 75)),
+            '85': float(np.percentile(volume, 85)),
             '90': float(np.percentile(volume, 90)),
             '95': float(np.percentile(volume, 95)),
             '99': float(np.percentile(volume, 99))
