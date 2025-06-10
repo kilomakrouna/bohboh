@@ -106,28 +106,82 @@ class COLMAP3DReconstructor:
         if copy_to_workspace:
             # Copy images to workspace and convert to JPG if needed
             processed_files = []
+            failed_files = []
             
             print("Processing images for COLMAP...")
             for i, tiff_file in enumerate(tqdm(tiff_files, desc="Processing images")):
-                # Read TIFF image
-                image = cv2.imread(str(tiff_file), cv2.IMREAD_COLOR)
-                if image is None:
-                    print(f"Warning: Could not read {tiff_file}")
+                try:
+                    # Try multiple ways to read the image
+                    image = None
+                    
+                    # Method 1: OpenCV
+                    image = cv2.imread(str(tiff_file), cv2.IMREAD_COLOR)
+                    
+                    # Method 2: If OpenCV fails, try with different flags
+                    if image is None:
+                        image = cv2.imread(str(tiff_file), cv2.IMREAD_UNCHANGED)
+                        if image is not None and len(image.shape) == 3:
+                            image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+                    
+                    # Method 3: Try PIL if OpenCV fails
+                    if image is None:
+                        try:
+                            from PIL import Image as PILImage
+                            pil_image = PILImage.open(tiff_file)
+                            # Convert PIL to OpenCV format
+                            image = np.array(pil_image)
+                            if len(image.shape) == 3:
+                                image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+                        except:
+                            pass
+                    
+                    if image is None:
+                        failed_files.append(tiff_file.name)
+                        continue
+                    
+                    # Save as JPG in workspace (COLMAP works better with JPG)
+                    output_name = f"image_{i:04d}.jpg"
+                    output_path = self.images_dir / output_name
+                    
+                    # Convert to 8-bit if necessary
+                    if image.dtype != np.uint8:
+                        # Normalize to 0-255 range
+                        if image.dtype == np.uint16:
+                            # For 16-bit images, scale down
+                            image = (image / 256).astype(np.uint8)
+                        else:
+                            # For other formats, normalize
+                            image = cv2.normalize(image, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+                    
+                    # Ensure image is in correct format for JPEG
+                    if len(image.shape) == 2:
+                        # Grayscale to BGR
+                        image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+                    elif len(image.shape) == 3 and image.shape[2] == 4:
+                        # RGBA to BGR
+                        image = cv2.cvtColor(image, cv2.COLOR_RGBA2BGR)
+                    
+                    success = cv2.imwrite(str(output_path), image)
+                    if success:
+                        processed_files.append(output_path)
+                    else:
+                        failed_files.append(tiff_file.name)
+                        
+                except Exception as e:
+                    failed_files.append(f"{tiff_file.name} (error: {str(e)})")
                     continue
-                
-                # Save as JPG in workspace (COLMAP works better with JPG)
-                output_name = f"image_{i:04d}.jpg"
-                output_path = self.images_dir / output_name
-                
-                # Convert to 8-bit if necessary
-                if image.dtype != np.uint8:
-                    # Normalize to 0-255 range
-                    image = cv2.normalize(image, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
-                
-                cv2.imwrite(str(output_path), image)
-                processed_files.append(output_path)
             
-            print(f"Processed {len(processed_files)} images")
+            print(f"Processed {len(processed_files)} images successfully")
+            if failed_files:
+                print(f"Failed to process {len(failed_files)} images:")
+                for failed in failed_files[:10]:  # Show first 10 failures
+                    print(f"  - {failed}")
+                if len(failed_files) > 10:
+                    print(f"  ... and {len(failed_files) - 10} more")
+                
+                if len(processed_files) == 0:
+                    raise RuntimeError("No images could be processed successfully")
+            
             return processed_files
         else:
             return tiff_files
@@ -147,22 +201,42 @@ class COLMAP3DReconstructor:
         if self.database_path.exists():
             self.database_path.unlink()
         
-        # Feature extraction options
-        feature_options = pycolmap.SiftExtractionOptions()
-        feature_options.estimate_affine_shape = True
-        feature_options.domain_size_pooling = True
-        
-        # Camera options
-        camera_options = pycolmap.CameraOptions()
-        camera_options.model = camera_model
-        
-        # Run feature extraction
-        pycolmap.extract_features(
-            database_path=self.database_path,
-            image_path=self.images_dir,
-            sift_options=feature_options,
-            camera_options=camera_options
-        )
+        # Feature extraction options - updated for newer pycolmap API
+        try:
+            # Try newer API first
+            feature_options = pycolmap.SiftExtractionOptions()
+            feature_options.estimate_affine_shape = True
+            feature_options.domain_size_pooling = True
+            
+            # Run feature extraction with newer API
+            pycolmap.extract_features(
+                database_path=self.database_path,
+                image_path=self.images_dir,
+                sift_options=feature_options,
+                camera_model=camera_model  # Pass camera model directly
+            )
+            
+        except (AttributeError, TypeError) as e:
+            print(f"Trying alternative API due to: {e}")
+            
+            # Try alternative API
+            try:
+                feature_options = pycolmap.SiftExtractionOptions()
+                
+                pycolmap.extract_features(
+                    database_path=self.database_path,
+                    image_path=self.images_dir,
+                    sift_options=feature_options
+                )
+                
+            except Exception as e2:
+                print(f"Trying basic API due to: {e2}")
+                
+                # Try most basic API
+                pycolmap.extract_features(
+                    database_path=str(self.database_path),
+                    image_path=str(self.images_dir)
+                )
         
         print(f"Features extracted and saved to {self.database_path}")
     
