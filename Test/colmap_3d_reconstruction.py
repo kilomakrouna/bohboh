@@ -251,22 +251,65 @@ class COLMAP3DReconstructor:
         """
         print(f"Matching features using {matching_method} method...")
         
-        # Matching options
-        match_options = pycolmap.SiftMatchingOptions()
-        match_options.guided_matching = True
-        
-        if matching_method == "exhaustive":
-            pycolmap.match_exhaustive_features(
-                database_path=self.database_path,
-                sift_options=match_options
-            )
-        elif matching_method == "sequential":
-            pycolmap.match_sequential_features(
-                database_path=self.database_path,
-                sift_options=match_options
-            )
-        else:
-            raise ValueError(f"Unsupported matching method: {matching_method}")
+        try:
+            # Try newer API first
+            match_options = pycolmap.SiftMatchingOptions()
+            match_options.guided_matching = True
+            
+            if matching_method == "exhaustive":
+                # Try different function names for exhaustive matching
+                try:
+                    pycolmap.match_exhaustive_features(
+                        database_path=self.database_path,
+                        sift_options=match_options
+                    )
+                except AttributeError:
+                    # Try alternative function name
+                    pycolmap.exhaustive_matching(
+                        database_path=self.database_path,
+                        sift_options=match_options
+                    )
+                    
+            elif matching_method == "sequential":
+                # Try different function names for sequential matching
+                try:
+                    pycolmap.match_sequential_features(
+                        database_path=self.database_path,
+                        sift_options=match_options
+                    )
+                except AttributeError:
+                    # Try alternative function name
+                    pycolmap.sequential_matching(
+                        database_path=self.database_path,
+                        sift_options=match_options
+                    )
+            else:
+                raise ValueError(f"Unsupported matching method: {matching_method}")
+                
+        except (AttributeError, TypeError) as e:
+            print(f"Trying alternative matching API due to: {e}")
+            
+            # Try simpler API without options
+            try:
+                if matching_method == "exhaustive":
+                    pycolmap.exhaustive_matching(database_path=str(self.database_path))
+                elif matching_method == "sequential":
+                    pycolmap.sequential_matching(database_path=str(self.database_path))
+                    
+            except Exception as e2:
+                print(f"Trying basic matching API due to: {e2}")
+                
+                # Try most basic API - check what functions are actually available
+                available_functions = [attr for attr in dir(pycolmap) if 'match' in attr.lower()]
+                print(f"Available matching functions: {available_functions}")
+                
+                # Try the most basic approach
+                if hasattr(pycolmap, 'match_features'):
+                    pycolmap.match_features(database_path=str(self.database_path))
+                elif hasattr(pycolmap, 'exhaustive_matching'):
+                    pycolmap.exhaustive_matching(database_path=str(self.database_path))
+                else:
+                    raise RuntimeError(f"No compatible matching function found. Available functions: {available_functions}")
         
         print("Feature matching completed")
     
@@ -280,20 +323,49 @@ class COLMAP3DReconstructor:
         sparse_model_dir = self.sparse_dir / "0"
         sparse_model_dir.mkdir(exist_ok=True, parents=True)
         
-        # Incremental mapping options
-        mapper_options = pycolmap.IncrementalMapperOptions()
-        mapper_options.min_num_matches = 15
-        mapper_options.init_min_num_inliers = 100
-        mapper_options.init_max_forward_motion = 0.95
-        mapper_options.multiple_models = False
-        
-        # Run incremental mapping
-        maps = pycolmap.incremental_mapping(
-            database_path=self.database_path,
-            image_path=self.images_dir,
-            output_path=sparse_model_dir,
-            options=mapper_options
-        )
+        try:
+            # Try newer API first
+            mapper_options = pycolmap.IncrementalMapperOptions()
+            mapper_options.min_num_matches = 15
+            mapper_options.init_min_num_inliers = 100
+            mapper_options.init_max_forward_motion = 0.95
+            mapper_options.multiple_models = False
+            
+            # Run incremental mapping
+            maps = pycolmap.incremental_mapping(
+                database_path=self.database_path,
+                image_path=self.images_dir,
+                output_path=sparse_model_dir,
+                options=mapper_options
+            )
+            
+        except (AttributeError, TypeError) as e:
+            print(f"Trying alternative SfM API due to: {e}")
+            
+            # Try alternative API
+            try:
+                maps = pycolmap.incremental_mapping(
+                    database_path=str(self.database_path),
+                    image_path=str(self.images_dir),
+                    output_path=str(sparse_model_dir)
+                )
+                
+            except Exception as e2:
+                print(f"Trying basic SfM API due to: {e2}")
+                
+                # Check available functions
+                available_functions = [attr for attr in dir(pycolmap) if 'map' in attr.lower() or 'reconstruct' in attr.lower()]
+                print(f"Available SfM functions: {available_functions}")
+                
+                # Try basic mapping
+                if hasattr(pycolmap, 'mapper'):
+                    maps = pycolmap.mapper(
+                        database_path=str(self.database_path),
+                        image_path=str(self.images_dir),
+                        output_path=str(sparse_model_dir)
+                    )
+                else:
+                    raise RuntimeError(f"No compatible SfM function found. Available functions: {available_functions}")
         
         if not maps:
             raise RuntimeError("SfM reconstruction failed. No models generated.")
