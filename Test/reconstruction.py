@@ -300,9 +300,9 @@ class CTReconstructor:
         box_size = min(num_cols, num_rows) * (1 - margin) * pixel_size
         self.bounding_box = [-box_size/2, box_size/2, -box_size/2, box_size/2, -box_size/2, box_size/2]
         
-        # Generate evenly spaced angles from 0 to pi (180 degrees)
-        # This assumes a standard CT scan with 180-degree coverage
-        self.angles_rad = np.linspace(0, np.pi, num_projections, endpoint=False)
+        # Generate evenly spaced angles from 0 to 2*pi (360 degrees)
+        # This provides full angular coverage to avoid cylindrical artifacts
+        self.angles_rad = np.linspace(0, 2*np.pi, num_projections, endpoint=False)
         
         print(f"Detector pixels: {self.detector_pixels}")
         print(f"Detector size: {self.detector_size} mm")
@@ -311,10 +311,11 @@ class CTReconstructor:
         print(f"Object-detector distance: {self.distance_object_detector} mm")
         print(f"Bounding box: {self.bounding_box}")
         print(f"Number of angles: {len(self.angles_rad)}")
-        print(f"Angle range: 0 to {np.pi:.3f} radians (0 to 180 degrees)")
+        print(f"Angle range: 0 to {2*np.pi:.3f} radians (0 to 360 degrees)")
         print("="*50 + "\n")
         
         print("Note: These parameters have been automatically detected.")
+        print("360-degree angular coverage is used by default to avoid cylindrical artifacts.")
         print("For better results, consider providing a configuration file with exact geometry parameters.")
         print("You can adjust these parameters manually if needed.\n")
     
@@ -402,28 +403,80 @@ class CTReconstructor:
         if num_projections != config_angles:
             print(f"Warning: Number of projections ({num_projections}) doesn't match config angles ({config_angles})")
             print("Adapting angles to match the number of projections...")
-            # Adjust angles to match the number of projections
-            self.angles_rad = np.linspace(0, np.pi, num_projections, endpoint=False)
+            # Keep the same angular range but adjust to match number of projections
+            start_angle = self.angles_rad[0]
+            end_angle = self.angles_rad[-1] + (self.angles_rad[-1] - self.angles_rad[0]) / (len(self.angles_rad) - 1)
+            self.angles_rad = np.linspace(start_angle, end_angle, num_projections, endpoint=False)
+            print(f"Updated to {len(self.angles_rad)} angles from {np.degrees(start_angle):.1f}° to {np.degrees(end_angle):.1f}°")
         
-        # Define reconstruction methods based on CUDA availability
-        if self.use_cuda:
-            print("Using CUDA-accelerated reconstruction methods...")
-            reconstruction_methods = [
-                ('SIRT_CUDA', {'ProjectionOrder': 'random', 'MinConstraint': 0}),
-                ('FBP_CUDA', {}),
-                ('BP_CUDA', {}),
-                ('CGLS_CUDA', {}),
-                ('SART_CUDA', {'MinConstraint': 0})
-            ]
+        # Check if a preferred method is set
+        preferred_method = getattr(self, 'preferred_method', 'auto')
+        
+        # Define reconstruction methods based on CUDA availability and preferred method
+        if preferred_method != 'auto':
+            if preferred_method == 'manual_backprojection':
+                print(f"Using preferred method: {preferred_method}")
+                # Skip ASTRA and go directly to manual backprojection
+                reconstructed_slices = []
+                angles = self.angles_rad  # Use the actual configured angles
+                
+                for i in tqdm(range(num_rows), desc="Manual backprojection"):
+                    # Extract the sinogram for slice i
+                    sinogram = projections[:, i, :]
+                    
+                    # Apply manual backprojection
+                    rec = self.manual_backprojection(sinogram, angles)
+                    reconstructed_slices.append(rec)
+                
+                # Convert list of 2D slices to 3D volume
+                self.reconstructed_volume = np.stack(reconstructed_slices, axis=0)
+                
+                print(f"\nManual backprojection completed successfully!")
+                print(f"Volume shape: {self.reconstructed_volume.shape}")
+                print(f"Volume data type: {self.reconstructed_volume.dtype}")
+                print(f"Value range: [{self.reconstructed_volume.min():.3f}, {self.reconstructed_volume.max():.3f}]")
+                
+                # Save the reconstructed volume if output_path is provided
+                if output_path:
+                    self.save(output_path)
+                    
+                return self.reconstructed_volume
+            
+            else:
+                # Try the preferred method first
+                if self.use_cuda:
+                    if preferred_method.endswith('_CUDA'):
+                        reconstruction_methods = [(preferred_method, self._get_method_options(preferred_method))]
+                    else:
+                        reconstruction_methods = [(preferred_method + '_CUDA', self._get_method_options(preferred_method + '_CUDA'))]
+                else:
+                    if preferred_method.endswith('_CUDA'):
+                        method_name = preferred_method.replace('_CUDA', '')
+                        reconstruction_methods = [(method_name, self._get_method_options(method_name))]
+                    else:
+                        reconstruction_methods = [(preferred_method, self._get_method_options(preferred_method))]
+                
+                print(f"Trying preferred reconstruction method: {reconstruction_methods[0][0]}")
         else:
-            print("Using CPU reconstruction methods...")
-            reconstruction_methods = [
-                ('SIRT', {'ProjectionOrder': 'random', 'MinConstraint': 0}),
-                ('FBP', {}),
-                ('BP', {}),
-                ('CGLS', {}),
-                ('SART', {'MinConstraint': 0})
-            ]
+            # Use automatic method selection
+            if self.use_cuda:
+                print("Using CUDA-accelerated reconstruction methods...")
+                reconstruction_methods = [
+                    ('FBP_CUDA', {}),  # Moved FBP to first position (better for most cases)
+                    ('BP_CUDA', {}),
+                    ('SIRT_CUDA', {'ProjectionOrder': 'random', 'MinConstraint': 0}),
+                    ('CGLS_CUDA', {}),
+                    ('SART_CUDA', {'MinConstraint': 0})
+                ]
+            else:
+                print("Using CPU reconstruction methods...")
+                reconstruction_methods = [
+                    ('FBP', {}),  # Moved FBP to first position (better for most cases)
+                    ('BP', {}),
+                    ('SIRT', {'ProjectionOrder': 'random', 'MinConstraint': 0}),
+                    ('CGLS', {}),
+                    ('SART', {'MinConstraint': 0})
+                ]
         
         # Try ASTRA methods first
         try:
@@ -438,7 +491,7 @@ class CTReconstructor:
                 try:
                     # Test with one slice
                     sinogram = projections[:, 0, :]
-                    angles = np.linspace(0, np.pi, num_projections, endpoint=False)
+                    angles = self.angles_rad  # Use the actual configured angles
                     
                     # Create geometry
                     proj_geom = astra.create_proj_geom('parallel', 1.0, num_cols, angles)
@@ -511,7 +564,7 @@ class CTReconstructor:
                     sinogram = projections[:, i, :]
                     
                     # Define parallel beam geometry
-                    angles = np.linspace(0, np.pi, num_projections, endpoint=False)
+                    angles = self.angles_rad  # Use the actual configured angles
                     proj_geom = astra.create_proj_geom('parallel', 1.0, num_cols, angles)
                     vol_geom = astra.create_vol_geom(num_cols, num_cols)
                     
@@ -562,7 +615,7 @@ class CTReconstructor:
             
             # Use manual backprojection instead
             reconstructed_slices = []
-            angles = np.linspace(0, np.pi, num_projections, endpoint=False)
+            angles = self.angles_rad  # Use the actual configured angles
             
             for i in tqdm(range(num_rows), desc="Manual backprojection"):
                 # Extract the sinogram for slice i
@@ -1011,3 +1064,200 @@ class CTReconstructor:
             
         print(f"Configuration source: {'Auto-detected' if self.auto_detected else 'Config file'}")
         print("="*50 + "\n")
+    
+    def set_reconstruction_method(self, method_name):
+        """
+        Set a specific reconstruction method to use
+        
+        Parameters:
+        -----------
+        method_name : str
+            Name of the reconstruction method to use
+            Options: 'FBP', 'FBP_CUDA', 'SIRT', 'SIRT_CUDA', 'BP', 'BP_CUDA', 
+                    'SART', 'SART_CUDA', 'CGLS', 'CGLS_CUDA', 'manual_backprojection', 'auto'
+        
+        Returns:
+        --------
+        bool : True if method was set successfully, False otherwise
+        """
+        valid_methods = [
+            'FBP', 'FBP_CUDA', 'SIRT', 'SIRT_CUDA', 'BP', 'BP_CUDA',
+            'SART', 'SART_CUDA', 'CGLS', 'CGLS_CUDA', 'manual_backprojection', 'auto'
+        ]
+        
+        if method_name not in valid_methods:
+            print(f"Error: Invalid method '{method_name}'. Valid options are: {valid_methods}")
+            return False
+        
+        # Check if CUDA method is requested but not available
+        if '_CUDA' in method_name and not self.cuda_available:
+            print(f"Warning: {method_name} requested but CUDA not available. Use {method_name.replace('_CUDA', '')} instead.")
+            return False
+        
+        self.preferred_method = method_name
+        print(f"Reconstruction method set to: {method_name}")
+        return True
+    
+    def get_current_method(self):
+        """
+        Get the currently set reconstruction method
+        
+        Returns:
+        --------
+        str : Current reconstruction method
+        """
+        return getattr(self, 'preferred_method', 'auto')
+    
+    def list_available_methods(self):
+        """
+        List all available reconstruction methods
+        """
+        print("Available reconstruction methods:")
+        print("="*40)
+        
+        methods = [
+            ('FBP', 'Filtered Backprojection (CPU)', True),
+            ('FBP_CUDA', 'Filtered Backprojection (GPU)', self.cuda_available),
+            ('BP', 'Simple Backprojection (CPU)', True),
+            ('BP_CUDA', 'Simple Backprojection (GPU)', self.cuda_available),
+            ('SIRT', 'Simultaneous Iterative Reconstruction (CPU)', True),
+            ('SIRT_CUDA', 'Simultaneous Iterative Reconstruction (GPU)', self.cuda_available),
+            ('SART', 'Simultaneous Algebraic Reconstruction (CPU)', True),
+            ('SART_CUDA', 'Simultaneous Algebraic Reconstruction (GPU)', self.cuda_available),
+            ('CGLS', 'Conjugate Gradient Least Squares (CPU)', True),
+            ('CGLS_CUDA', 'Conjugate Gradient Least Squares (GPU)', self.cuda_available),
+            ('manual_backprojection', 'Manual Backprojection (Fallback)', True),
+            ('auto', 'Automatic selection (Default)', True)
+        ]
+        
+        for method, description, available in methods:
+            status = "✓" if available else "✗"
+            print(f"{status} {method:<20} - {description}")
+        
+        print("="*40)
+        print("Recommended methods:")
+        print("- FBP/FBP_CUDA: Fast, good for well-sampled data")
+        print("- SIRT/SIRT_CUDA: Better for limited-angle or noisy data")
+        print("- BP/BP_CUDA: Simple but may have artifacts")
+    
+    def check_angular_coverage(self):
+        """
+        Check the angular coverage and suggest improvements if needed
+        
+        Returns:
+        --------
+        dict : Analysis of angular coverage
+        """
+        if self.angles_rad is None:
+            return {"error": "No angles loaded yet"}
+        
+        analysis = {}
+        
+        # Calculate angular range
+        angle_range = self.angles_rad[-1] - self.angles_rad[0]
+        angle_step = np.mean(np.diff(self.angles_rad)) if len(self.angles_rad) > 1 else 0
+        
+        analysis['num_angles'] = len(self.angles_rad)
+        analysis['start_angle_deg'] = np.degrees(self.angles_rad[0])
+        analysis['end_angle_deg'] = np.degrees(self.angles_rad[-1])
+        analysis['total_range_deg'] = np.degrees(angle_range)
+        analysis['average_step_deg'] = np.degrees(angle_step)
+        
+        # Check coverage
+        if angle_range < 0.9 * np.pi:  # Less than ~162 degrees
+            analysis['coverage_warning'] = "Limited angular coverage detected. This may cause cylindrical artifacts."
+            analysis['recommendation'] = "Consider using 360-degree scan or SIRT/SART algorithms for better reconstruction."
+        elif angle_range < 1.1 * np.pi:  # About 180 degrees
+            analysis['coverage_info'] = "Standard 180-degree coverage detected."
+            analysis['recommendation'] = "Good for most objects. FBP should work well."
+        else:  # More than 180 degrees
+            analysis['coverage_info'] = "Extended angular coverage detected."
+            analysis['recommendation'] = "Excellent coverage. All algorithms should work well."
+        
+        # Check angular sampling
+        if len(self.angles_rad) < 180:
+            analysis['sampling_warning'] = "Sparse angular sampling detected. This may cause streak artifacts."
+            analysis['sampling_recommendation'] = "Consider using iterative algorithms (SIRT/SART) to reduce artifacts."
+        
+        return analysis
+    
+    def print_angular_analysis(self):
+        """
+        Print analysis of angular coverage
+        """
+        analysis = self.check_angular_coverage()
+        
+        if 'error' in analysis:
+            print(f"Error: {analysis['error']}")
+            return
+        
+        print("\n" + "="*50)
+        print("ANGULAR COVERAGE ANALYSIS")
+        print("="*50)
+        print(f"Number of angles: {analysis['num_angles']}")
+        print(f"Start angle: {analysis['start_angle_deg']:.1f}°")
+        print(f"End angle: {analysis['end_angle_deg']:.1f}°")
+        print(f"Total coverage: {analysis['total_range_deg']:.1f}°")
+        print(f"Average step: {analysis['average_step_deg']:.2f}°")
+        
+        if 'coverage_warning' in analysis:
+            print(f"\n⚠️  WARNING: {analysis['coverage_warning']}")
+        elif 'coverage_info' in analysis:
+            print(f"\nℹ️  INFO: {analysis['coverage_info']}")
+        
+        if 'sampling_warning' in analysis:
+            print(f"\n⚠️  WARNING: {analysis['sampling_warning']}")
+        
+        if 'recommendation' in analysis:
+            print(f"\n💡 RECOMMENDATION: {analysis['recommendation']}")
+        
+        if 'sampling_recommendation' in analysis:
+            print(f"\n💡 SAMPLING: {analysis['sampling_recommendation']}")
+        
+        print("="*50 + "\n")
+    
+    def use_360_degree_scan(self, num_projections=None):
+        """
+        Set angular range to 360 degrees to avoid cylindrical artifacts
+        
+        Parameters:
+        -----------
+        num_projections : int, optional
+            Number of projections. If None, uses current number
+        """
+        if num_projections is None:
+            if self.angles_rad is not None:
+                num_projections = len(self.angles_rad)
+            else:
+                raise ValueError("Number of projections not set. Load projections first or specify num_projections.")
+        
+        # Set 360-degree coverage
+        self.angles_rad = np.linspace(0, 2*np.pi, num_projections, endpoint=False)
+        
+        print(f"Updated to 360-degree scan with {num_projections} projections")
+        print("This should reduce cylindrical artifacts significantly.")
+        
+        # Also update cone beam if the total coverage suggests it
+        if num_projections >= 360:
+            print("With this many projections, consider enabling cone-beam geometry for better results.")
+            print("Use: reconstructor.use_cone_beam = True")
+    
+    def _get_method_options(self, method_name):
+        """
+        Get default options for a reconstruction method
+        
+        Parameters:
+        -----------
+        method_name : str
+            Name of the reconstruction method
+            
+        Returns:
+        --------
+        dict : Options for the method
+        """
+        if 'SIRT' in method_name:
+            return {'ProjectionOrder': 'random', 'MinConstraint': 0}
+        elif 'SART' in method_name:
+            return {'MinConstraint': 0}
+        else:
+            return {}
